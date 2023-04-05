@@ -17,7 +17,7 @@ on:
 jobs:
   deploy:
     name: Helm Chart Deployment to GKE
-    runs-on: linux
+    runs-on: ubuntu-latest
 
 ################################################################################
 #

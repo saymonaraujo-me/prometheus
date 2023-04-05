@@ -11,11 +11,7 @@ on:
 jobs:
   build:
     name: Build Container Image
-    runs-on: self-hosted
-    container:
-      image: alpine:3.13
-      volumes:
-        - /var/run/docker.sock:/var/run/docker.sock
+    runs-on: ubuntu-latest
 
 ################################################################################
 
