@@ -1,0 +1,119 @@
+name: Helm Chart Deployment to GKE
+on:
+  workflow_run:
+    workflows:
+      - Build Container Image
+    branches:
+      - 'main'
+    types:
+      - 'completed'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'helm/**'
+      - '.github/workflows/helm-deploy.yaml'
+
+jobs:
+  deploy:
+    name: Helm Chart Deployment to GKE
+    runs-on: linux
+
+################################################################################
+#
+# PLEASE UPDATE ENVIRONMENT VARIABLES TO YOUR APP
+# AND DO NOT CHANGE ANY WORKFLOW STEPS!
+#
+################################################################################
+
+    env:
+      HELM_CHART_NAME: prometheus
+      HELM_CHART_DIRECTORY: ./helm
+      GITHUB_SHA: ${{ github.sha }}
+      USE_GKE_GCLOUD_AUTH_PLUGIN: True
+
+################################################################################
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+
+      - name: Install Dependencies
+        env:
+          GRYPE_URL: https://github.com/anchore/grype/releases/download/v0.11.0/grype_0.11.0_linux_amd64.tar.gz
+        run: |
+          apk add \
+            python3 \
+            curl \
+            bash \
+            openssl
+      
+      # Setup gcloud CLI
+      - uses: google-github-actions/setup-gcloud@v0
+        with:
+          service_account_key: ${{ secrets.GKE_SERVICE_ACCOUNT_KEY }}
+          project_id: ${{ secrets.GKE_PROJECT_ID }}
+
+      # Configure docker to use the gcloud command-line tool as a credential helper
+      - run: |
+          # Set up docker to authenticate
+          # via gcloud command-line tool.
+          gcloud auth configure-docker
+
+      # Get the GKE credentials so we can deploy to the cluster
+      - run: |-
+          gcloud container clusters get-credentials "${{ env.GKE_CLUSTER }}" --zone "${{ env.GKE_ZONE }}"
+
+      - name: Install gke auth plugin
+        run: |
+          gcloud components install gke-gcloud-auth-plugin --quiet
+        
+      # Install helm
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+
+      - name: Define Deployment Environment Variables
+        run: |
+          GITHUB_REF=${{ github.ref }}
+
+          if [ '${{ github.event_name }}' = 'workflow_run' ]; then
+            GITHUB_REF=${{ github.event.workflow_run.head_branch }}
+          fi
+
+          CLUSTER_NAME="${{ env.GKE_CLUSTER }}"
+          HELM_CHART="stage-$HELM_CHART_NAME"
+          IMAGE_TAG='stage-latest'
+          VALUES_FILENAME="$HELM_CHART_DIRECTORY/values-stage.yaml"
+
+          if [ '${{ github.ref }}' = 'refs/heads/main' ]; then
+            CLUSTER_NAME="${{ env.GKE_CLUSTER }}"
+            HELM_CHART="prod-$HELM_CHART_NAME"
+            IMAGE_TAG='latest'
+            VALUES_FILENAME="$HELM_CHART_DIRECTORY/values-prod.yaml"
+          fi
+
+          echo CLUSTER_NAME="$CLUSTER_NAME" >> $GITHUB_ENV
+          echo HELM_CHART="$HELM_CHART" >> $GITHUB_ENV
+          echo IMAGE_TAG="$IMAGE_TAG" >> $GITHUB_ENV
+          echo VALUES_FILENAME="$VALUES_FILENAME" >> $GITHUB_ENV
+      
+      - name: Lint Helm Chart
+        run: |
+          helm lint $HELM_CHART_DIRECTORY \
+            --values $VALUES_FILENAME
+            
+      - name: Install or Upgrade the Helm Chart
+        if: |
+          (github.event_name != 'workflow_run')
+          || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+        run: |
+          helm upgrade $HELM_CHART $HELM_CHART_DIRECTORY \
+            --install \
+            --values $VALUES_FILENAME \
+            --debug --wait
+
+          echo "::warning::Image Tag: '$IMAGE_TAG'"
+          

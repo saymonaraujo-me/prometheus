@@ -1,0 +1,78 @@
+name: Build Container Image
+on:
+  push:
+    branches:
+      - 'main'
+      - 'dev'
+    paths:
+      - 'Dockerfile'
+      - 'config/*'
+
+jobs:
+  build:
+    name: Build Container Image
+    runs-on: self-hosted
+    container:
+      image: alpine:3.13
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+
+################################################################################
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Install Dependencies
+        env:
+          GRYPE_URL: https://github.com/anchore/grype/releases/download/v0.11.0/grype_0.11.0_linux_amd64.tar.gz
+        run: |
+          apk add \
+            curl \
+            docker-cli \
+            python3
+          curl --fail --silent --show-error --location --output grype.tar.gz "$GRYPE_URL" \
+            && tar xzf grype.tar.gz grype \
+            && install --owner root --group root --mode 0755 grype /usr/local/bin/grype \
+            && rm grype grype.tar.gz
+
+      # Setup gcloud CLI
+      - uses: google-github-actions/setup-gcloud@v0
+        with:
+          service_account_key: ${{ secrets.GKE_SERVICE_ACCOUNT_KEY }}
+          project_id: ${{ secrets.GKE_PROJECT_ID }}
+
+      # Configure Docker to use the gcloud command-line tool as a credential
+      # helper for authentication
+      - run: |-
+          gcloud --quiet auth configure-docker
+
+      # Get the GKE credentials so we can deploy to the cluster
+      - run: |-
+          gcloud container clusters get-credentials "${{ env.GKE_CLUSTER }}" --zone "${{ env.GKE_ZONE }}"
+
+      # Build the Docker image
+      - name: Build
+        run: |-
+          docker build \
+            --tag "gcr.io/${{ secrets.GKE_PROJECT_ID }}/${{ github.event.repository.name }}:$GITHUB_SHA" \
+            --build-arg GITHUB_SHA="$GITHUB_SHA" \
+            --build-arg GITHUB_REF="$GITHUB_REF" \
+            .
+
+      - name: Docker Tag
+        run: |
+          IMAGE_TAG_LATEST="${{ github.event.repository.name }}:stage-latest"
+
+          if [ '${{ github.ref }}' = 'refs/heads/main' ]; then
+            IMAGE_TAG_LATEST="${{ github.event.repository.name }}:latest"
+          fi
+
+          docker tag gcr.io/${{ secrets.GKE_PROJECT_ID }}/${{ github.event.repository.name }}:$GITHUB_SHA gcr.io/${{ secrets.GKE_PROJECT_ID }}/$IMAGE_TAG_LATEST
+
+          echo IMAGE_TAG_LATEST="gcr.io/${{ secrets.GKE_PROJECT_ID }}/$IMAGE_TAG_LATEST" >> $GITHUB_ENV
+
+      # Push the Docker image to Google Container Registry
+      - name: Publish
+        run: |-
+          docker push "$IMAGE_TAG_LATEST"
