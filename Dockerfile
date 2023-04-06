@@ -48,6 +48,7 @@ ENV APP_VERSION="2.43.0" \
 
 EXPOSE 9090
 
+
 COPY config/prometheus.yml /opt/bitname/prometheus.conf/prometheus.yml
 
 WORKDIR /opt/bitnami/prometheus
